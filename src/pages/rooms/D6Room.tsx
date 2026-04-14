@@ -32,6 +32,7 @@ export function D6Room() {
 
   const [phase, setPhase] = useState<Phase>("intro");
   const [result, setResult] = useState<D6Result | null>(null);
+  const [showResultPopup, setShowResultPopup] = useState(false);
   const [targetPosition, setTargetPosition] = useState<ScreenPosition>({ x: 50, y: 50 });
   const [mousePosition, setMousePosition] = useState<ScreenPosition>({ x: 50, y: 50 });
 
@@ -50,6 +51,7 @@ export function D6Room() {
 
   function startRoll(nextMousePosition?: ScreenPosition) {
     setResult(rollD6());
+    setShowResultPopup(false);
     setTargetPosition(randomTargetPosition());
     setMousePosition(nextMousePosition ?? mousePosition);
     setPhase("search");
@@ -89,12 +91,12 @@ export function D6Room() {
         {phase === "search" && result ? (
           <>
             <button
-              aria-label={`Result ${result}. Click to roll again.`}
+              aria-label={`Result ${result}. Click to reveal the result popup.`}
               className="absolute z-10 flex h-24 w-24 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-white/6 text-[clamp(2.5rem,7vw,4.5rem)] font-semibold leading-none text-stone-50 transition-[opacity,transform,box-shadow,filter] duration-150 ease-out disabled:pointer-events-none"
-              disabled={!canClickResult}
+              disabled={!canClickResult || showResultPopup}
               onClick={(event) => {
                 event.stopPropagation();
-                startRoll();
+                setShowResultPopup(true);
               }}
               style={{
                 left: `${targetPosition.x}%`,
@@ -135,6 +137,37 @@ export function D6Room() {
             >
               Back to overview
             </Link>
+
+            {showResultPopup ? (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
+                <div className="w-full max-w-sm rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(8,10,12,0.96),rgba(0,0,0,1))] p-7 text-center shadow-[0_24px_80px_rgba(0,0,0,0.72)]">
+                  <p className="text-[0.68rem] uppercase tracking-[0.34em] text-stone-500">Result found</p>
+                  <p className="mt-5 text-6xl text-stone-50">{result}</p>
+                  <p className="mt-4 text-sm leading-6 text-stone-400">
+                    The dark finally admitted it. Use this result, then start the next search when you are ready.
+                  </p>
+
+                  <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      className="flex-1 rounded-full border border-white/18 bg-white/8 px-5 py-3 text-sm uppercase tracking-[0.24em] text-stone-100 transition hover:border-white/30 hover:bg-white/14"
+                      onClick={() => {
+                        startRoll();
+                      }}
+                      type="button"
+                    >
+                      Roll again
+                    </button>
+
+                    <Link
+                      className="rounded-full border border-white/14 px-5 py-3 text-sm uppercase tracking-[0.24em] text-stone-300 transition hover:border-white/26 hover:bg-white/6"
+                      to="/"
+                    >
+                      Overview
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </>
         ) : null}
 

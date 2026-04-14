@@ -199,6 +199,7 @@ function getPointerFromEvent(event: ReactPointerEvent<HTMLDivElement>) {
 export function FundicerPuzzleRoom({ puzzle, puzzles }: FundicerPuzzleRoomProps) {
   const reducedMotion = useReducedMotion() ?? false;
   const [pointer, setPointer] = useState<PointerPosition>({ x: 50, y: 50 });
+  const [showGallery, setShowGallery] = useState(false);
   const theme = THEMES[puzzle.theme ?? "indigo"];
   const nodeLookup = buildNodeLookup(puzzle.nodes);
   const currentPuzzleIndex = puzzles.findIndex((entry) => entry.id === puzzle.id);
@@ -233,6 +234,9 @@ export function FundicerPuzzleRoom({ puzzle, puzzles }: FundicerPuzzleRoomProps)
   const completedSet = new Set(completedSegmentIds);
   const activeNodeIds = getUniqueNodeIds(activeSegments);
   const traceSet = new Set(traceNodeIds);
+  const puzzleAspectWidth = puzzle.width ?? 4;
+  const puzzleAspectHeight = puzzle.height ?? 3;
+  const puzzleAspectRatio = puzzleAspectWidth / puzzleAspectHeight;
   const activeRollTotal = activeRollValue === null ? 0 : puzzle.segments.filter((segment) => segment.rollValue === activeRollValue).length;
   const activeRollCompleted = activeRollTotal - activeSegments.length;
   const completionPercent = Math.round((completedSegmentIds.length / puzzle.segments.length) * 100);
@@ -304,170 +308,11 @@ export function FundicerPuzzleRoom({ puzzle, puzzles }: FundicerPuzzleRoomProps)
 
         <div className="absolute right-4 top-4 z-30 flex flex-wrap items-center justify-end gap-3 sm:right-6 sm:top-6">
           {teaserValue ? <div className={`rounded-full border px-4 py-2 text-sm ${theme.accentChipClassName}`}>provisional omen: {teaserValue}</div> : null}
-          {started ? (
-            <button
-              className={`rounded-full border px-4 py-2 text-[0.64rem] uppercase tracking-[0.28em] transition ${theme.secondaryButtonClassName}`}
-              onClick={() => {
-                resetAttempt("The current strand loosens and asks you to try again.");
-              }}
-              type="button"
-            >
-              Reset attempt
-            </button>
-          ) : null}
         </div>
 
-        <div className="relative z-10 grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[22rem_minmax(0,1fr)] lg:p-6">
-          <aside className="room-panel soft-scrollbar relative overflow-auto rounded-[2rem] p-5 sm:p-6">
-            <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/14 to-transparent" />
-            <p className={`font-curse text-[0.66rem] uppercase tracking-[0.34em] ${theme.accentTextClassName}`}>Fundicer archive</p>
-            <h2 className="mt-4 text-3xl leading-tight text-stone-50">{puzzle.title}</h2>
-            <p className="mt-4 text-sm leading-6 text-stone-300/82">{puzzle.description}</p>
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-4 p-4 pt-16 sm:p-6 sm:pt-20">
 
-            <div className="mt-6 grid grid-cols-2 gap-3">
-              <div className={`rounded-[1.35rem] border p-4 ${theme.accentChipClassName}`}>
-                <p className="text-[0.62rem] uppercase tracking-[0.28em] opacity-70">Progress</p>
-                <p className="mt-3 text-2xl text-stone-50">{completedSegmentIds.length}/{puzzle.segments.length}</p>
-                <p className="mt-1 text-xs opacity-80">{completionPercent}% restored</p>
-              </div>
-              <div className={`rounded-[1.35rem] border p-4 ${theme.subtleChipClassName}`}>
-                <p className="text-[0.62rem] uppercase tracking-[0.28em] text-stone-400">Coins</p>
-                <p className="mt-3 text-2xl text-stone-50">{coins}</p>
-                <p className="mt-1 text-xs text-stone-400">earned on this plate</p>
-              </div>
-            </div>
-
-            <div className="mt-6 flex flex-col gap-3">
-              <button
-                className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition disabled:cursor-not-allowed disabled:opacity-60 ${theme.primaryButtonClassName}`}
-                disabled={rolling || !started}
-                onClick={roll}
-                type="button"
-              >
-                {rolling ? "Rolling..." : "Roll d20"}
-              </button>
-
-              <button
-                className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition ${theme.secondaryButtonClassName}`}
-                onClick={clearProgress}
-                type="button"
-              >
-                Clear saved progress
-              </button>
-            </div>
-
-            <div className="mt-6 rounded-[1.45rem] border border-white/10 bg-black/24 p-4">
-              <div className="flex flex-wrap gap-2">
-                <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.accentChipClassName}`}>
-                  {currentRollValue !== null ? `last roll ${currentRollValue}` : "waiting for roll"}
-                </div>
-                <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.subtleChipClassName}`}>
-                  {activeRollValue !== null ? `active group ${activeRollValue}` : puzzleComplete ? "image finished" : "no group active"}
-                </div>
-              </div>
-
-              <p className="mt-4 text-sm leading-6 text-stone-300/82">{prompt}</p>
-
-              {activeRollValue !== null ? (
-                <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-white/4 p-3">
-                  <p className={`text-[0.64rem] uppercase tracking-[0.28em] ${theme.accentTextClassName}`}>
-                    Roll {activeRollValue}: {activeRollCompleted}/{activeRollTotal} complete
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {puzzle.segments
-                      .filter((segment) => segment.rollValue === activeRollValue)
-                      .map((segment) => {
-                        const finished = completedSet.has(segment.id);
-                        const current = segment.id === activeSegment?.id;
-
-                        return (
-                          <div
-                            key={segment.id}
-                            className={`rounded-[1rem] border px-3 py-2 text-sm ${
-                              finished
-                                ? theme.accentChipClassName
-                                : current
-                                  ? `${theme.selectorActiveClassName} text-stone-50`
-                                  : "border-white/10 bg-black/18 text-stone-300/76"
-                            }`}
-                          >
-                            {segment.label ?? segment.id}
-                          </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="mt-6 rounded-[1.45rem] border border-white/10 bg-black/24 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className={`font-curse text-[0.64rem] uppercase tracking-[0.32em] ${theme.accentTextClassName}`}>Roll ledger</p>
-                <p className="text-xs text-stone-400">{rollHistory.length} stored</p>
-              </div>
-
-              {rollHistory.length > 0 ? (
-                <div className="mt-4 overflow-hidden rounded-[1rem] border border-white/10 bg-black/18">
-                  <div className="soft-scrollbar max-h-64 overflow-auto">
-                    <table className="min-w-full text-left text-sm text-stone-200/84">
-                      <thead className="bg-white/4 text-[0.68rem] uppercase tracking-[0.18em] text-stone-400">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">Try</th>
-                          <th className="px-3 py-2 font-medium">Roll</th>
-                          <th className="px-3 py-2 font-medium">Outcome</th>
-                          <th className="px-3 py-2 text-right font-medium">Reward</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rollHistory.map((entry, index) => (
-                          <tr key={entry.id} className="border-t border-white/8 align-top">
-                            <td className="px-3 py-2 text-stone-400">{index + 1}</td>
-                            <td className="px-3 py-2 font-semibold text-stone-50">{entry.value}</td>
-                            <td className="px-3 py-2 text-stone-300/82">{entry.outcomeLabel}</td>
-                            <td className={`px-3 py-2 text-right ${entry.reward > 0 ? theme.accentTextClassName : "text-stone-500"}`}>
-                              {entry.reward > 0 ? `+${entry.reward}` : "-"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <p className="mt-4 text-sm leading-6 text-stone-400">Your rolls will land here once the d20 starts being helpful.</p>
-              )}
-            </div>
-
-            <div className="mt-6">
-              <p className={`font-curse text-[0.64rem] uppercase tracking-[0.32em] ${theme.accentTextClassName}`}>Puzzle selector</p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                {puzzles.map((entry) => (
-                  <Link
-                    key={entry.id}
-                    className={`rounded-[1.35rem] border p-3 transition ${
-                      entry.id === puzzle.id ? theme.selectorActiveClassName : theme.selectorIdleClassName
-                    }`}
-                    to={`/d20/${entry.id}`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <img
-                        alt={entry.title}
-                        className="h-16 w-16 rounded-[1rem] border border-white/10 object-cover"
-                        loading="lazy"
-                        src={entry.thumbnailSrc ?? entry.imageSrc}
-                      />
-                      <div className="min-w-0">
-                        <p className={`font-curse text-[0.58rem] uppercase tracking-[0.3em] ${theme.accentTextClassName}`}>{entry.id}</p>
-                        <p className="mt-2 truncate text-sm text-stone-100">{entry.title}</p>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          </aside>
-
-          <div className="room-panel relative min-h-[32rem] overflow-hidden rounded-[2rem] p-3 sm:p-4">
+          <div className="room-panel relative min-h-0 flex-1 overflow-hidden rounded-[2rem] p-3 sm:p-4">
             <div className="absolute inset-x-4 top-4 z-20 flex flex-wrap items-center justify-between gap-3">
               <div className={`rounded-full border px-4 py-2 text-[0.62rem] uppercase tracking-[0.28em] ${theme.accentChipClassName}`}>
                 {puzzleComplete ? "restoration complete" : activeRollValue !== null ? `roll ${activeRollValue} unlocked` : "roll to reveal a strand"}
@@ -484,14 +329,17 @@ export function FundicerPuzzleRoom({ puzzle, puzzles }: FundicerPuzzleRoomProps)
 
             <div className="flex h-full items-center justify-center px-2 pb-16 pt-16 sm:px-4 sm:pb-20 sm:pt-20">
               <div
-                className="relative w-full max-w-[980px] overflow-hidden rounded-[1.8rem] border border-white/10 bg-black/35"
+                className="relative w-full overflow-hidden rounded-[1.8rem] border border-white/10 bg-black/35"
                 onPointerDown={(event) => {
                   setPointer(getPointerFromEvent(event));
                 }}
                 onPointerMove={(event) => {
                   setPointer(getPointerFromEvent(event));
                 }}
-                style={{ aspectRatio: `${puzzle.width ?? 4} / ${puzzle.height ?? 3}` }}
+                style={{
+                  aspectRatio: `${puzzleAspectWidth} / ${puzzleAspectHeight}`,
+                  maxWidth: `min(100%, calc((100dvh - 18rem) * ${puzzleAspectRatio}))`,
+                }}
               >
                 <img alt={puzzle.title} className="absolute inset-0 h-full w-full object-cover opacity-72" src={puzzle.imageSrc} />
                 <div className={`absolute inset-0 ${theme.imageOverlayClassName}`} />
@@ -623,7 +471,297 @@ export function FundicerPuzzleRoom({ puzzle, puzzles }: FundicerPuzzleRoomProps)
               </div>
             </div>
           </div>
+
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="room-panel rounded-[1.8rem] p-4 sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className={`font-curse text-[0.64rem] uppercase tracking-[0.32em] ${theme.accentTextClassName}`}>Fundicer archive</p>
+                  <h2 className="mt-2 text-xl text-stone-50 sm:text-2xl">{puzzle.title}</h2>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.accentChipClassName}`}>
+                    {completedSegmentIds.length}/{puzzle.segments.length} restored
+                  </div>
+                  <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.subtleChipClassName}`}>
+                    {coins} coins
+                  </div>
+                  <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.subtleChipClassName}`}>
+                    {currentRollValue !== null ? `last roll ${currentRollValue}` : "waiting for roll"}
+                  </div>
+                  <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.subtleChipClassName}`}>
+                    {activeRollValue !== null ? `active group ${activeRollValue}` : puzzleComplete ? "image finished" : "no group active"}
+                  </div>
+                </div>
+              </div>
+
+              <p className="mt-4 text-sm leading-6 text-stone-300/82">{prompt}</p>
+
+              {activeRollValue !== null ? (
+                <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-black/24 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className={`text-[0.64rem] uppercase tracking-[0.28em] ${theme.accentTextClassName}`}>
+                      Roll {activeRollValue}: {activeRollCompleted}/{activeRollTotal} complete
+                    </p>
+                    <p className="text-[0.64rem] uppercase tracking-[0.28em] text-stone-400">
+                      {completionPercent}% whole image restored
+                    </p>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {puzzle.segments
+                      .filter((segment) => segment.rollValue === activeRollValue)
+                      .map((segment) => {
+                        const finished = completedSet.has(segment.id);
+                        const current = segment.id === activeSegment?.id;
+
+                        return (
+                          <div
+                            key={segment.id}
+                            className={`rounded-full border px-3 py-2 text-sm ${
+                              finished
+                                ? theme.accentChipClassName
+                                : current
+                                  ? `${theme.selectorActiveClassName} text-stone-50`
+                                  : "border-white/10 bg-black/18 text-stone-300/76"
+                            }`}
+                          >
+                            {segment.label ?? segment.id}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap gap-3 xl:flex-col xl:justify-center">
+              <button
+                className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition disabled:cursor-not-allowed disabled:opacity-60 ${theme.primaryButtonClassName}`}
+                disabled={rolling || !started}
+                onClick={roll}
+                type="button"
+              >
+                {rolling ? "Rolling..." : "Roll d20"}
+              </button>
+
+              {started ? (
+                <>
+                  <button
+                    className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition ${theme.secondaryButtonClassName}`}
+                    onClick={() => {
+                      setShowGallery(true);
+                    }}
+                    type="button"
+                  >
+                    Open gallery
+                  </button>
+                  <button
+                    className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition ${theme.secondaryButtonClassName}`}
+                    onClick={() => {
+                      resetAttempt("The current strand loosens and asks you to try again.");
+                    }}
+                    type="button"
+                  >
+                    Reset attempt
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
         </div>
+
+        <AnimatePresence>
+          {started && showGallery ? (
+            <motion.div
+              animate={{ opacity: 1 }}
+              className="absolute inset-0 z-40 bg-black/78 p-4 sm:p-6"
+              exit={{ opacity: 0 }}
+              initial={{ opacity: 0 }}
+            >
+              <motion.div
+                animate={{ opacity: 1, y: 0 }}
+                className="room-panel soft-scrollbar mx-auto flex max-h-full w-full max-w-6xl flex-col overflow-auto rounded-[2rem] p-5 sm:p-6"
+                initial={{ opacity: 0, y: 18 }}
+                transition={{ duration: 0.22 }}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className={`font-curse text-[0.66rem] uppercase tracking-[0.34em] ${theme.accentTextClassName}`}>Fundicer gallery</p>
+                    <h2 className="mt-3 text-2xl text-stone-50 sm:text-3xl">{puzzle.title}</h2>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300/82">{puzzle.description}</p>
+                  </div>
+
+                  <button
+                    className={`rounded-full border px-4 py-2 text-[0.64rem] uppercase tracking-[0.28em] transition ${theme.secondaryButtonClassName}`}
+                    onClick={() => {
+                      setShowGallery(false);
+                    }}
+                    type="button"
+                  >
+                    Close gallery
+                  </button>
+                </div>
+
+                <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
+                  <div>
+                    <div className="overflow-hidden rounded-[1.8rem] border border-white/10 bg-black/24">
+                      <div className="grid gap-0 lg:grid-cols-[18rem_minmax(0,1fr)]">
+                        <div className="relative h-full min-h-[14rem] overflow-hidden border-b border-white/10 lg:border-b-0 lg:border-r">
+                          <img alt={puzzle.title} className="h-full w-full object-cover" src={puzzle.thumbnailSrc ?? puzzle.imageSrc} />
+                          <div className={`absolute inset-0 ${theme.imageOverlayClassName}`} />
+                        </div>
+
+                        <div className="p-5 sm:p-6">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className={`rounded-[1.35rem] border p-4 ${theme.accentChipClassName}`}>
+                              <p className="text-[0.62rem] uppercase tracking-[0.28em] opacity-70">Progress</p>
+                              <p className="mt-3 text-2xl text-stone-50">{completedSegmentIds.length}/{puzzle.segments.length}</p>
+                              <p className="mt-1 text-xs opacity-80">{completionPercent}% restored</p>
+                            </div>
+                            <div className={`rounded-[1.35rem] border p-4 ${theme.subtleChipClassName}`}>
+                              <p className="text-[0.62rem] uppercase tracking-[0.28em] text-stone-400">Coins</p>
+                              <p className="mt-3 text-2xl text-stone-50">{coins}</p>
+                              <p className="mt-1 text-xs text-stone-400">earned on this plate</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.accentChipClassName}`}>
+                              {currentRollValue !== null ? `last roll ${currentRollValue}` : "waiting for roll"}
+                            </div>
+                            <div className={`rounded-full border px-3 py-1.5 text-[0.62rem] uppercase tracking-[0.28em] ${theme.subtleChipClassName}`}>
+                              {activeRollValue !== null ? `active group ${activeRollValue}` : puzzleComplete ? "image finished" : "no group active"}
+                            </div>
+                          </div>
+
+                          <p className="mt-4 text-sm leading-6 text-stone-300/82">{prompt}</p>
+
+                          <div className="mt-5 flex flex-wrap gap-3">
+                            <button
+                              className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition ${theme.secondaryButtonClassName}`}
+                              onClick={clearProgress}
+                              type="button"
+                            >
+                              Clear saved progress
+                            </button>
+                            <button
+                              className={`rounded-full border px-5 py-3 text-sm uppercase tracking-[0.24em] transition ${theme.secondaryButtonClassName}`}
+                              onClick={() => {
+                                setShowGallery(false);
+                              }}
+                              type="button"
+                            >
+                              Back to canvas
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {activeRollValue !== null ? (
+                      <div className="mt-6 rounded-[1.45rem] border border-white/10 bg-black/24 p-4">
+                        <p className={`text-[0.64rem] uppercase tracking-[0.28em] ${theme.accentTextClassName}`}>
+                          Roll {activeRollValue}: {activeRollCompleted}/{activeRollTotal} complete
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {puzzle.segments
+                            .filter((segment) => segment.rollValue === activeRollValue)
+                            .map((segment) => {
+                              const finished = completedSet.has(segment.id);
+                              const current = segment.id === activeSegment?.id;
+
+                              return (
+                                <div
+                                  key={segment.id}
+                                  className={`rounded-[1rem] border px-3 py-2 text-sm ${
+                                    finished
+                                      ? theme.accentChipClassName
+                                      : current
+                                        ? `${theme.selectorActiveClassName} text-stone-50`
+                                        : "border-white/10 bg-black/18 text-stone-300/76"
+                                  }`}
+                                >
+                                  {segment.label ?? segment.id}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-6 rounded-[1.45rem] border border-white/10 bg-black/24 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className={`font-curse text-[0.64rem] uppercase tracking-[0.32em] ${theme.accentTextClassName}`}>Roll ledger</p>
+                        <p className="text-xs text-stone-400">{rollHistory.length} stored</p>
+                      </div>
+
+                      {rollHistory.length > 0 ? (
+                        <div className="mt-4 overflow-hidden rounded-[1rem] border border-white/10 bg-black/18">
+                          <div className="soft-scrollbar max-h-64 overflow-auto">
+                            <table className="min-w-full text-left text-sm text-stone-200/84">
+                              <thead className="bg-white/4 text-[0.68rem] uppercase tracking-[0.18em] text-stone-400">
+                                <tr>
+                                  <th className="px-3 py-2 font-medium">Try</th>
+                                  <th className="px-3 py-2 font-medium">Roll</th>
+                                  <th className="px-3 py-2 font-medium">Outcome</th>
+                                  <th className="px-3 py-2 text-right font-medium">Reward</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rollHistory.map((entry, index) => (
+                                  <tr key={entry.id} className="border-t border-white/8 align-top">
+                                    <td className="px-3 py-2 text-stone-400">{index + 1}</td>
+                                    <td className="px-3 py-2 font-semibold text-stone-50">{entry.value}</td>
+                                    <td className="px-3 py-2 text-stone-300/82">{entry.outcomeLabel}</td>
+                                    <td className={`px-3 py-2 text-right ${entry.reward > 0 ? theme.accentTextClassName : "text-stone-500"}`}>
+                                      {entry.reward > 0 ? `+${entry.reward}` : "-"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-4 text-sm leading-6 text-stone-400">Your rolls will land here once the d20 starts being helpful.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.45rem] border border-white/10 bg-black/24 p-4">
+                    <p className={`font-curse text-[0.64rem] uppercase tracking-[0.32em] ${theme.accentTextClassName}`}>Puzzle selector</p>
+                    <div className="mt-4 grid gap-3">
+                      {puzzles.map((entry) => (
+                        <Link
+                          key={entry.id}
+                          className={`rounded-[1.35rem] border p-3 transition ${
+                            entry.id === puzzle.id ? theme.selectorActiveClassName : theme.selectorIdleClassName
+                          }`}
+                          to={`/d20/${entry.id}`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <img
+                              alt={entry.title}
+                              className="h-16 w-16 rounded-[1rem] border border-white/10 object-cover"
+                              loading="lazy"
+                              src={entry.thumbnailSrc ?? entry.imageSrc}
+                            />
+                            <div className="min-w-0">
+                              <p className={`font-curse text-[0.58rem] uppercase tracking-[0.3em] ${theme.accentTextClassName}`}>{entry.id}</p>
+                              <p className="mt-2 truncate text-sm text-stone-100">{entry.title}</p>
+                            </div>
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
         {!started ? (
           <RoomMessageBox

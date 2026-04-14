@@ -1,312 +1,592 @@
-﻿import { motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import { AmbientEyes } from "@/components/AmbientEyes";
 import { FullscreenRoom } from "@/components/FullscreenRoom";
 import { DICE_BY_ID } from "@/data/dice";
 import { pick, rollDie, type RollOutcome } from "@/utils/rolls";
 
 const die = DICE_BY_ID.d12;
-const STEP_MS = 180;
+const GAME_DURATION_MS = 5_000;
+const SPAWN_INTERVAL_MS = 280;
+const BUBBLE_LIFETIME_MS = 1_050;
+const LEADERBOARD_LIMIT = 10;
+const LEADERBOARD_STORAGE_KEY = "fundicer:d12-aim-leaderboard";
 
 const DECREES = {
-  low: ["The court issues a small, dignified disappointment.", "Judgment delivered. The eyes were hoping for more."],
-  mid: ["The court approves this number with bureaucratic restraint.", "A reasonable decree, slightly annoyed at being reasonable."],
-  high: ["The chamber leans in and calls this promising.", "A favorable ruling with just a touch of smug pageantry."],
-  crit: ["A perfect verdict. The chamber nearly applauds itself.", "Maximum approval. The room will be speaking about this for hours."],
+  low: ["A low ruling. Fast hands, stingy fate.", "The chamber saw the hustle and still handed you a small number."],
+  mid: ["A middling verdict. The bubbles were louder than the prophecy.", "Decent score, sensible ruling, no applause."],
+  high: ["The chamber respects that score and says so with a better number.", "A sharp run and a favorable verdict."],
+  crit: ["Maximum verdict. The chamber calls that aim suspiciously divine.", "Perfect judgment with the bubbles still smoking."],
 } satisfies Record<RollOutcome["tier"], readonly string[]>;
+
+type Phase = "idle" | "running" | "resolving" | "finished";
 
 type Point = {
   x: number;
   y: number;
 };
 
-type Zone = Point & {
-  radius: number;
+type Bubble = Point & {
+  id: number;
+  size: number;
+  expiresAt: number;
+  hue: number;
 };
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
+type LeaderboardEntry = {
+  id: string;
+  name: string;
+  outcome: number;
+  playedAt: number;
+  score: number;
+};
 
 function distance(a: Point, b: Point) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function createZone(radius: number, anchor: Point) {
-  return {
-    x: clamp(anchor.x, 18 + radius, 82 - radius),
-    y: clamp(anchor.y, 18 + radius, 82 - radius),
-    radius,
-  };
+function randomBetween(min: number, max: number) {
+  return min + Math.random() * (max - min);
 }
 
-function driftZone(zone: Zone, reducedMotion: boolean) {
-  const wobble = reducedMotion ? 4.5 : 7.5;
-  const nextRadius = Math.max(7, zone.radius - (reducedMotion ? 0.06 : 0.14));
+function sortLeaderboard(entries: LeaderboardEntry[]) {
+  return [...entries]
+    .sort((left, right) => right.score - left.score || right.playedAt - left.playedAt)
+    .slice(0, LEADERBOARD_LIMIT);
+}
 
-  return {
-    x: clamp(zone.x + (Math.random() * 2 - 1) * wobble, 18 + nextRadius, 82 - nextRadius),
-    y: clamp(zone.y + (Math.random() * 2 - 1) * wobble, 18 + nextRadius, 82 - nextRadius),
-    radius: nextRadius,
-  };
+function readLeaderboard() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LEADERBOARD_STORAGE_KEY) ?? "[]");
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return sortLeaderboard(
+      parsed.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return [];
+        }
+
+        const candidate = entry as Partial<LeaderboardEntry>;
+
+        if (
+          typeof candidate.id !== "string" ||
+          typeof candidate.name !== "string" ||
+          typeof candidate.score !== "number" ||
+          typeof candidate.outcome !== "number" ||
+          typeof candidate.playedAt !== "number"
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            id: candidate.id,
+            name: candidate.name,
+            score: candidate.score,
+            outcome: candidate.outcome,
+            playedAt: candidate.playedAt,
+          },
+        ];
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeLeaderboard(entries: LeaderboardEntry[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(entries));
 }
 
 export function D12Room() {
   const reducedMotion = useReducedMotion() ?? false;
-  const [pointer, setPointer] = useState<Point>({ x: 50, y: 40 });
-  const [challengeActive, setChallengeActive] = useState(false);
-  const [resolving, setResolving] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  const [score, setScore] = useState(0);
+  const [timeLeftMs, setTimeLeftMs] = useState(GAME_DURATION_MS);
   const [outcome, setOutcome] = useState<RollOutcome | null>(null);
-  const [decree, setDecree] = useState("Open the channel and keep the pointer inside the wandering seal until the court is satisfied.");
-  const [zone, setZone] = useState<Zone>(() => createZone(16, { x: 50, y: 50 }));
-  const timers = useRef<number[]>([]);
-  const stepTimer = useRef<number | null>(null);
-  const pointerRef = useRef(pointer);
-  const zoneRef = useRef(zone);
-  const activeRef = useRef(challengeActive);
-  const resolvingRef = useRef(resolving);
+  const [decree, setDecree] = useState(
+    "Start the five-second trial, burst every bubble you can reach, and let the chamber roll the d12 when time runs out.",
+  );
+  const [playerName, setPlayerName] = useState("");
+  const [scoreSaved, setScoreSaved] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => readLeaderboard());
+  const bubbleIdRef = useRef(0);
+  const endAtRef = useRef<number | null>(null);
+  const spawnTimerRef = useRef<number | null>(null);
+  const tickTimerRef = useRef<number | null>(null);
+  const resolveTimerRef = useRef<number | null>(null);
+  const phaseRef = useRef<Phase>(phase);
 
   useEffect(() => {
-    pointerRef.current = pointer;
-  }, [pointer]);
-
-  useEffect(() => {
-    zoneRef.current = zone;
-  }, [zone]);
-
-  useEffect(() => {
-    activeRef.current = challengeActive;
-  }, [challengeActive]);
-
-  useEffect(() => {
-    resolvingRef.current = resolving;
-  }, [resolving]);
+    phaseRef.current = phase;
+  }, [phase]);
 
   useEffect(() => {
     return () => {
-      if (stepTimer.current !== null) {
-        window.clearTimeout(stepTimer.current);
+      if (spawnTimerRef.current !== null) {
+        window.clearInterval(spawnTimerRef.current);
       }
-      timers.current.forEach((timer) => window.clearTimeout(timer));
-      timers.current = [];
+
+      if (tickTimerRef.current !== null) {
+        window.clearInterval(tickTimerRef.current);
+      }
+
+      if (resolveTimerRef.current !== null) {
+        window.clearTimeout(resolveTimerRef.current);
+      }
     };
   }, []);
 
-  function queue(callback: () => void, delay: number) {
-    timers.current.push(window.setTimeout(callback, delay));
-  }
+  function clearLoopTimers() {
+    if (spawnTimerRef.current !== null) {
+      window.clearInterval(spawnTimerRef.current);
+      spawnTimerRef.current = null;
+    }
 
-  function stopStepLoop() {
-    if (stepTimer.current !== null) {
-      window.clearTimeout(stepTimer.current);
-      stepTimer.current = null;
+    if (tickTimerRef.current !== null) {
+      window.clearInterval(tickTimerRef.current);
+      tickTimerRef.current = null;
     }
   }
 
-  function finishVerdict() {
-    const next = rollDie("d12");
-    stopStepLoop();
-    setChallengeActive(false);
-    setResolving(true);
-    setProgress(1);
-    setDecree("The chamber is aligning twelve opinions and one unnecessary gasp.");
+  function clearAllTimers() {
+    clearLoopTimers();
 
-    queue(() => {
-      setOutcome(next);
-      setResolving(false);
-      setProgress(0);
-      setZone(createZone(16, { x: 50, y: 50 }));
-      setDecree(pick(DECREES[next.tier]));
-    }, reducedMotion ? 120 : 680);
+    if (resolveTimerRef.current !== null) {
+      window.clearTimeout(resolveTimerRef.current);
+      resolveTimerRef.current = null;
+    }
   }
 
-  function advanceChallenge() {
-    if (!activeRef.current || resolvingRef.current) {
-      return;
-    }
+  function createBubble(existing: Bubble[], now = Date.now()) {
+    const size = randomBetween(reducedMotion ? 11 : 10, reducedMotion ? 14 : 16);
+    const padding = size / 2 + 6;
+    let candidate = {
+      x: 50,
+      y: 50,
+      size,
+      expiresAt: now + (reducedMotion ? BUBBLE_LIFETIME_MS + 240 : BUBBLE_LIFETIME_MS),
+      hue: pick([32, 40, 48, 56]),
+    };
 
-    const currentZone = zoneRef.current;
-    const inside = distance(pointerRef.current, currentZone) <= currentZone.radius;
-    const nextZone = driftZone(currentZone, reducedMotion);
-    zoneRef.current = nextZone;
-    setZone(nextZone);
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      const next = {
+        ...candidate,
+        x: randomBetween(padding, 100 - padding),
+        y: randomBetween(padding, 100 - padding),
+      };
+      const collides = existing.some((bubble) => distance(next, bubble) < (next.size + bubble.size) * 0.56);
 
-    let reachedVerdict = false;
-    setProgress((current) => {
-      const delta = inside ? (reducedMotion ? 0.16 : 0.1) : -(reducedMotion ? 0.14 : 0.2);
-      const next = clamp(current + delta, 0, 1);
-      if (next >= 1) {
-        reachedVerdict = true;
+      if (!collides) {
+        candidate = next;
+        break;
       }
-      return next;
-    });
 
-    if (reachedVerdict) {
-      finishVerdict();
-      return;
+      candidate = next;
     }
 
-    stepTimer.current = window.setTimeout(advanceChallenge, STEP_MS);
+    return {
+      id: bubbleIdRef.current++,
+      ...candidate,
+    };
   }
 
-  function startVerdict() {
-    if (activeRef.current || resolvingRef.current) {
+  function refillBubbles(current: Bubble[], now = Date.now()) {
+    const targetCount = reducedMotion ? 3 : 4;
+    const next = [...current];
+
+    while (next.length < targetCount) {
+      next.push(createBubble(next, now));
+    }
+
+    return next;
+  }
+
+  function finishRun() {
+    if (phaseRef.current !== "running") {
       return;
     }
 
-    stopStepLoop();
+    clearLoopTimers();
+    phaseRef.current = "resolving";
+    setPhase("resolving");
+    setBubbles([]);
+    setTimeLeftMs(0);
+    setDecree("Time. The chamber is turning your panic into a twelve-sided ruling.");
+
+    const nextOutcome = rollDie("d12");
+
+    resolveTimerRef.current = window.setTimeout(() => {
+      phaseRef.current = "finished";
+      setOutcome(nextOutcome);
+      setPhase("finished");
+      setDecree(pick(DECREES[nextOutcome.tier]));
+    }, reducedMotion ? 140 : 620);
+  }
+
+  function startRun() {
+    clearAllTimers();
+    bubbleIdRef.current = 0;
+    phaseRef.current = "running";
+    setPhase("running");
     setOutcome(null);
-    setProgress(0);
-    const nextZone = createZone(reducedMotion ? 15 : 16, { x: 50, y: 50 });
-    zoneRef.current = nextZone;
-    setZone(nextZone);
-    setChallengeActive(true);
-    setDecree("Keep the pointer inside the moving seal until the chamber tires of watching.");
-    stepTimer.current = window.setTimeout(advanceChallenge, STEP_MS);
+    setScore(0);
+    setTimeLeftMs(GAME_DURATION_MS);
+    setPlayerName("");
+    setScoreSaved(false);
+    setShowLeaderboard(false);
+    setDecree("Five seconds. Pop every bubble you can before the chamber finalizes your d12.");
+
+    const now = Date.now();
+    endAtRef.current = now + GAME_DURATION_MS;
+
+    const startingBubbles: Bubble[] = [];
+    const initialCount = reducedMotion ? 2 : 3;
+
+    while (startingBubbles.length < initialCount) {
+      startingBubbles.push(createBubble(startingBubbles, now));
+    }
+
+    setBubbles(startingBubbles);
+
+    spawnTimerRef.current = window.setInterval(() => {
+      const tickNow = Date.now();
+
+      setBubbles((current) => {
+        const alive = current.filter((bubble) => bubble.expiresAt > tickNow);
+
+        if (phaseRef.current !== "running") {
+          return alive;
+        }
+
+        return refillBubbles(alive, tickNow);
+      });
+    }, reducedMotion ? SPAWN_INTERVAL_MS + 120 : SPAWN_INTERVAL_MS);
+
+    tickTimerRef.current = window.setInterval(() => {
+      const endAt = endAtRef.current;
+
+      if (endAt === null) {
+        return;
+      }
+
+      const tickNow = Date.now();
+      const remaining = Math.max(0, endAt - tickNow);
+      setTimeLeftMs(remaining);
+      setBubbles((current) => current.filter((bubble) => bubble.expiresAt > tickNow));
+
+      if (remaining <= 0) {
+        finishRun();
+      }
+    }, 50);
   }
 
-  function stopVerdict() {
-    if (!activeRef.current || resolvingRef.current) {
+  function popBubble(id: number) {
+    if (phaseRef.current !== "running") {
       return;
     }
 
-    stopStepLoop();
-    setChallengeActive(false);
-    setProgress(0);
-    const nextZone = createZone(16, { x: 50, y: 50 });
-    zoneRef.current = nextZone;
-    setZone(nextZone);
-    setDecree("Too twitchy. The chamber requires a steadier hand.");
+    setScore((current) => current + 1);
+    setBubbles((current) => {
+      const remaining = current.filter((bubble) => bubble.id !== id && bubble.expiresAt > Date.now());
+
+      if (phaseRef.current !== "running") {
+        return remaining;
+      }
+
+      return refillBubbles(remaining);
+    });
   }
+
+  function saveScore() {
+    if (!outcome || scoreSaved) {
+      return;
+    }
+
+    const name = playerName.trim() || "Anonymous";
+    const nextEntry: LeaderboardEntry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: name.slice(0, 18),
+      score,
+      outcome: outcome.value,
+      playedAt: Date.now(),
+    };
+    const nextBoard = sortLeaderboard([nextEntry, ...leaderboard]);
+
+    setLeaderboard(nextBoard);
+    setScoreSaved(true);
+    setShowLeaderboard(true);
+    setDecree(`${nextEntry.name} pinned ${score} pops and a d12 ${outcome.value} onto the local board.`);
+    writeLeaderboard(nextBoard);
+  }
+
+  const secondsLeft = (timeLeftMs / 1000).toFixed(1);
+  const phaseLabel =
+    phase === "running"
+      ? "Trial live"
+      : phase === "resolving"
+        ? "Verdict forming"
+        : outcome
+          ? `Verdict ${outcome.value}`
+          : "Aim test ready";
 
   return (
     <FullscreenRoom die={die} contentClassName="overflow-hidden">
-      <section
-        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_center,rgba(214,158,46,0.16),transparent_24%),linear-gradient(180deg,rgba(22,16,10,1),rgba(0,0,0,1))]"
-        onPointerMove={(event) => {
-          const bounds = event.currentTarget.getBoundingClientRect();
-          const next = {
-            x: ((event.clientX - bounds.left) / bounds.width) * 100,
-            y: ((event.clientY - bounds.top) / bounds.height) * 100,
-          };
-          pointerRef.current = next;
-          setPointer(next);
-        }}
-      >
-        <AmbientEyes
-          active
-          className="absolute inset-0 opacity-75"
-          normalizedPointer={{ x: pointer.x / 100, y: pointer.y / 100 }}
-          reducedMotion={reducedMotion}
-        />
-
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04),transparent_44%)]" />
+      <section className="relative flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top,rgba(251,191,36,0.18),transparent_22%),linear-gradient(180deg,rgba(20,14,10,1),rgba(0,0,0,1))]">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_22%_18%,rgba(251,191,36,0.08),transparent_24%),radial-gradient(circle_at_78%_74%,rgba(245,158,11,0.08),transparent_26%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent_16%,transparent_84%,rgba(255,255,255,0.03))]" />
 
         <div className="absolute left-4 top-4 z-10 max-w-sm rounded-[1.6rem] border border-white/10 bg-black/24 px-4 py-4 sm:left-6 sm:top-6 sm:px-5">
-          <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/68">Decree</p>
+          <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/68">Trial note</p>
           <p className="mt-3 text-sm leading-6 text-stone-300/84">{decree}</p>
         </div>
 
         <div className="absolute right-4 top-4 z-10 rounded-full border border-white/10 bg-black/24 px-4 py-2 text-[0.64rem] uppercase tracking-[0.28em] text-stone-300/72 sm:right-6 sm:top-6">
-          {resolving ? "Judging" : outcome ? `Verdict ${outcome.value}` : challengeActive ? "Channel open" : "Court attentive"}
+          {phaseLabel}
         </div>
 
-        <div className="relative flex h-full w-full items-center justify-center px-4 py-8 sm:px-6 lg:px-10">
-          <div className="relative h-[22rem] w-[22rem] max-w-full">
-            {Array.from({ length: 12 }, (_, index) => {
-              const angle = (index / 12) * Math.PI * 2;
-              const x = 50 + Math.cos(angle) * 42;
-              const y = 50 + Math.sin(angle) * 42;
+        <div className="relative z-10 flex min-h-0 flex-1 items-center justify-center px-4 py-8 sm:px-6 lg:px-10">
+          <div className="grid w-full max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
+            <div className="relative mx-auto w-full max-w-[46rem]">
+              <div className="relative aspect-square overflow-hidden rounded-[2.5rem] border border-amber-100/14 bg-[radial-gradient(circle_at_center,rgba(255,245,200,0.08),rgba(255,245,200,0.02),rgba(0,0,0,0.94))] shadow-[0_30px_120px_-34px_rgba(251,191,36,0.22)]">
+                <div className="absolute inset-[7%] rounded-[2rem] border border-amber-100/10" />
+                <div className="absolute inset-[15%] rounded-[1.8rem] border border-white/8" />
+                <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-[linear-gradient(180deg,transparent,rgba(251,191,36,0.14),transparent)]" />
+                <div className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-[linear-gradient(90deg,transparent,rgba(251,191,36,0.14),transparent)]" />
 
-              return (
-                <div
-                  key={index}
-                  className="absolute h-3 w-3 rounded-full bg-amber-100/50 shadow-[0_0_16px_rgba(251,191,36,0.35)]"
-                  style={{ left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)" }}
-                />
-              );
-            })}
+                {phase === "idle" ? (
+                  <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
+                    <div className="max-w-md rounded-[2rem] border border-white/10 bg-black/30 px-6 py-7 backdrop-blur">
+                      <p className="font-curse text-[0.68rem] uppercase tracking-[0.34em] text-amber-100/74">
+                        Five-second chamber
+                      </p>
+                      <h2 className="mt-4 text-3xl text-stone-50 sm:text-4xl">Burst as many bubbles as possible.</h2>
+                      <p className="mt-4 text-sm leading-6 text-stone-300/82">
+                        The chamber gives you exactly five seconds. When the timer dies, the d12 result appears and the
+                        leaderboard option unlocks.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
 
-            <div className="absolute inset-[14%] rounded-full border border-amber-100/14" />
-            <div className="absolute inset-[24%] rounded-full border border-amber-100/10" />
+                {phase === "resolving" ? (
+                  <motion.div
+                    animate={{ opacity: [0.45, 0.9, 0.45], scale: [0.96, 1.02, 0.98] }}
+                    className="absolute inset-0 flex items-center justify-center bg-black/22"
+                    transition={{ duration: reducedMotion ? 0.6 : 1.2, repeat: Number.POSITIVE_INFINITY }}
+                  >
+                    <div className="rounded-full border border-amber-100/18 bg-amber-100/8 px-6 py-3 text-[0.72rem] uppercase tracking-[0.32em] text-amber-50">
+                      Counting the shots
+                    </div>
+                  </motion.div>
+                ) : null}
 
-            <motion.div
-              animate={{
-                left: `${zone.x}%`,
-                top: `${zone.y}%`,
-                width: `${zone.radius * 2}%`,
-                height: `${zone.radius * 2}%`,
-                opacity: challengeActive || resolving ? 1 : 0.55,
-              }}
-              className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-100/26 bg-[radial-gradient(circle,rgba(251,191,36,0.22),rgba(251,191,36,0.04),transparent_72%)] shadow-[0_0_40px_rgba(251,191,36,0.16)]"
-              transition={{ duration: 0.18, ease: "easeOut" }}
-            />
+                {bubbles.map((bubble) => (
+                  <motion.button
+                    key={bubble.id}
+                    animate={{ opacity: 1, scale: 1 }}
+                    aria-label="Pop bubble"
+                    className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/18"
+                    initial={{ opacity: 0, scale: 0.74 }}
+                    onClick={() => {
+                      popBubble(bubble.id);
+                    }}
+                    style={{
+                      left: `${bubble.x}%`,
+                      top: `${bubble.y}%`,
+                      width: `${bubble.size}%`,
+                      height: `${bubble.size}%`,
+                      background: `radial-gradient(circle at 32% 28%, rgba(255,255,255,0.92), hsla(${bubble.hue}, 96%, 70%, 0.78) 22%, hsla(${bubble.hue}, 86%, 48%, 0.2) 62%, rgba(0,0,0,0.08) 100%)`,
+                      boxShadow: `0 0 24px hsla(${bubble.hue}, 96%, 64%, 0.28)`,
+                    }}
+                    transition={{ duration: reducedMotion ? 0.08 : 0.18, ease: "easeOut" }}
+                    type="button"
+                  >
+                    <span
+                      className="pointer-events-none absolute inset-[18%] rounded-full border border-white/24"
+                      style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.26)" }}
+                    />
+                    <span className="sr-only">Pop bubble</span>
+                  </motion.button>
+                ))}
 
-            <motion.div
-              animate={{ left: `${pointer.x}%`, top: `${pointer.y}%`, opacity: challengeActive || resolving ? 1 : 0.7 }}
-              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
-              transition={{ duration: 0.08 }}
-            >
-              <div className="relative h-20 w-20">
-                <div className="absolute inset-0 rounded-full border border-amber-100/16 bg-[radial-gradient(circle,rgba(255,245,200,0.2),rgba(255,245,200,0.08),transparent_72%)] shadow-[0_0_28px_rgba(255,240,188,0.16)]" />
-                <div className="absolute left-1/2 top-1/2 h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border border-stone-200/24 bg-[linear-gradient(180deg,rgba(37,37,42,0.96),rgba(8,8,10,1))] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]" />
-                <div className="absolute left-[54%] top-[57%] h-8 w-2.5 rounded-full bg-[linear-gradient(180deg,rgba(120,120,124,0.95),rgba(42,42,46,1))] rotate-[38deg] origin-top" />
-                <div className="absolute left-[62%] top-[86%] h-3.5 w-9 -translate-x-1/2 rounded-full border border-stone-200/12 bg-[linear-gradient(180deg,rgba(72,72,76,0.95),rgba(19,19,22,1))]" />
+                <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/42 px-4 py-2 text-[0.62rem] uppercase tracking-[0.3em] text-stone-300/78">
+                  {phase === "running"
+                    ? "Shoot the appearing bubbles"
+                    : phase === "finished"
+                      ? "Run complete"
+                      : phase === "resolving"
+                        ? "Verdict incoming"
+                        : "Start the chamber"}
+                </div>
               </div>
-            </motion.div>
+            </div>
 
-            <motion.div
-              animate={{ opacity: challengeActive || resolving ? 1 : 0 }}
-              className="absolute inset-x-4 bottom-4 rounded-[1.5rem] border border-white/10 bg-black/42 px-4 py-3 text-center"
-              initial={false}
-            >
-              <p className="font-curse text-[0.62rem] uppercase tracking-[0.3em] text-amber-100/74">
-                {resolving ? "Judgment forming" : challengeActive ? "Keep the eye inside the seal" : "Open the channel to begin"}
-              </p>
-              <div className="mx-auto mt-3 h-1.5 w-40 overflow-hidden rounded-full bg-white/10">
-                <motion.div
-                  animate={{ width: `${progress * 100}%` }}
-                  className="h-full rounded-full bg-amber-100"
-                  initial={false}
-                  transition={{ duration: 0.08 }}
-                />
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-1">
+                <div className="rounded-[1.8rem] border border-white/10 bg-black/26 p-5">
+                  <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/70">Time left</p>
+                  <p className="mt-3 text-4xl text-stone-50">{secondsLeft}s</p>
+                </div>
+
+                <div className="rounded-[1.8rem] border border-white/10 bg-black/26 p-5">
+                  <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/70">Bubbles popped</p>
+                  <p className="mt-3 text-4xl text-stone-50">{score}</p>
+                </div>
               </div>
-            </motion.div>
+
+              <div className="rounded-[1.8rem] border border-white/10 bg-black/26 p-5">
+                <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/70">Result</p>
+                <p className="mt-3 text-5xl text-amber-50">{outcome?.value ?? "--"}</p>
+                <p className="mt-4 text-sm leading-6 text-stone-300/82">
+                  {phase === "finished"
+                    ? "The run is over. Save it to the local leaderboard or jump straight back in."
+                    : phase === "running"
+                      ? "No verdict yet. Keep clicking."
+                      : phase === "resolving"
+                        ? "The d12 is rolling now."
+                        : "The chamber waits for the opening shot."}
+                </p>
+              </div>
+
+              {phase === "finished" ? (
+                <div className="rounded-[1.8rem] border border-amber-100/14 bg-[linear-gradient(180deg,rgba(41,26,6,0.42),rgba(0,0,0,0.9))] p-5">
+                  <p className="font-curse text-[0.64rem] uppercase tracking-[0.32em] text-amber-100/72">Leaderboard option</p>
+                  <div className="mt-4 flex gap-3">
+                    <input
+                      className="min-w-0 flex-1 rounded-full border border-white/12 bg-black/34 px-4 py-2.5 text-sm text-stone-100 outline-none transition placeholder:text-stone-500 focus:border-amber-100/30"
+                      maxLength={18}
+                      onChange={(event) => {
+                        setPlayerName(event.target.value);
+                      }}
+                      placeholder="Name or initials"
+                      value={playerName}
+                    />
+                    <button
+                      className="rounded-full border border-amber-100/18 bg-amber-100/8 px-4 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-amber-50 transition hover:border-amber-100/30 hover:bg-amber-100/12 disabled:cursor-not-allowed disabled:opacity-45"
+                      disabled={scoreSaved}
+                      onClick={saveScore}
+                      type="button"
+                    >
+                      {scoreSaved ? "Saved" : "Save"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      className="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-stone-100 transition hover:border-white/24 hover:bg-white/10"
+                      onClick={() => {
+                        setShowLeaderboard(true);
+                      }}
+                      type="button"
+                    >
+                      View leaderboard
+                    </button>
+                    <button
+                      className="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-stone-100 transition hover:border-white/24 hover:bg-white/10"
+                      onClick={startRun}
+                      type="button"
+                    >
+                      Aim again
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="rounded-full border border-amber-100/18 bg-amber-100/8 px-6 py-3 text-sm uppercase tracking-[0.24em] text-amber-50 transition hover:border-amber-100/30 hover:bg-amber-100/12 disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={phase === "running" || phase === "resolving"}
+                  onClick={startRun}
+                  type="button"
+                >
+                  {phase === "idle" ? "Start aim test" : "Run it again"}
+                </button>
+              )}
+
+              <div className="rounded-[1.5rem] border border-white/10 bg-black/22 px-4 py-4 text-sm leading-6 text-stone-400">
+                Local board stores the top {LEADERBOARD_LIMIT} scores in this browser only.
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="absolute inset-x-4 bottom-4 z-10 flex justify-center sm:inset-x-6 sm:bottom-6">
-          <div className="flex gap-3 rounded-full border border-white/10 bg-black/28 p-2 backdrop-blur">
-            <button
-              className="rounded-full border border-amber-100/18 bg-amber-100/8 px-5 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-amber-50 transition hover:border-amber-100/30 hover:bg-amber-100/12 disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={challengeActive || resolving}
-              onClick={startVerdict}
-              type="button"
+        {showLeaderboard ? (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/76 px-4">
+            <motion.div
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full max-w-xl rounded-[2rem] border border-amber-100/16 bg-[linear-gradient(180deg,rgba(26,17,8,0.96),rgba(0,0,0,1))] p-6 shadow-[0_30px_120px_-40px_rgba(251,191,36,0.22)] sm:p-7"
+              initial={{ opacity: 0, y: 18 }}
+              transition={{ duration: 0.22 }}
             >
-              Open channel
-            </button>
-            <button
-              className="rounded-full border border-white/12 bg-white/6 px-5 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-stone-200 transition hover:border-white/24 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!challengeActive || resolving}
-              onClick={stopVerdict}
-              type="button"
-            >
-              Close channel
-            </button>
-          </div>
-        </div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-curse text-[0.66rem] uppercase tracking-[0.34em] text-amber-100/74">
+                    D12 leaderboard
+                  </p>
+                  <h2 className="mt-3 text-2xl text-stone-50 sm:text-3xl">Best bubble runs</h2>
+                  <p className="mt-3 text-sm leading-6 text-stone-300/80">
+                    Ranked by bubbles popped. Ties go to the more recent run.
+                  </p>
+                </div>
 
-        {outcome ? (
-          <motion.div
-            animate={{ opacity: 1, y: 0 }}
-            className="absolute bottom-6 left-1/2 z-10 w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 rounded-[1.8rem] border border-amber-100/16 bg-[linear-gradient(180deg,rgba(22,16,10,0.84),rgba(0,0,0,0.96))] p-5 text-center shadow-[0_24px_80px_-24px_rgba(251,191,36,0.36)]"
-            initial={{ opacity: 0, y: 14 }}
-            transition={{ duration: 0.24 }}
-          >
-            <p className="font-curse text-[0.66rem] uppercase tracking-[0.34em] text-amber-100/76">Verdict issued</p>
-            <p className="mt-4 text-6xl text-amber-50 sm:text-7xl">{outcome.value}</p>
-          </motion.div>
+                <button
+                  className="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-[0.68rem] uppercase tracking-[0.28em] text-stone-200 transition hover:border-white/24 hover:bg-white/10"
+                  onClick={() => {
+                    setShowLeaderboard(false);
+                  }}
+                  type="button"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-6 space-y-3">
+                {leaderboard.length ? (
+                  leaderboard.map((entry, index) => (
+                    <div
+                      key={entry.id}
+                      className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/26 px-4 py-3"
+                    >
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-100/16 bg-amber-100/8 text-sm text-amber-50">
+                        {index + 1}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm uppercase tracking-[0.22em] text-stone-100">{entry.name}</p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.22em] text-stone-500">
+                          {new Date(entry.playedAt).toLocaleDateString(undefined, {
+                            day: "numeric",
+                            month: "short",
+                          })}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg text-stone-50">{entry.score}</p>
+                        <p className="text-[0.6rem] uppercase tracking-[0.24em] text-stone-500">pops</p>
+                      </div>
+                      <div className="rounded-full border border-amber-100/14 bg-amber-100/8 px-3 py-1 text-[0.62rem] uppercase tracking-[0.24em] text-amber-50">
+                        d12 {entry.outcome}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-[1.5rem] border border-white/10 bg-black/24 px-5 py-6 text-center text-sm leading-6 text-stone-400">
+                    No saved runs yet. Finish the chamber, save a score, and the board will start behaving like a board.
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
         ) : null}
       </section>
     </FullscreenRoom>
